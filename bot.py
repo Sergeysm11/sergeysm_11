@@ -234,27 +234,38 @@ async def cb_my_books(cb: CallbackQuery):
     else:
         text = "📚 Книги в базе:\n\nНажми на книгу чтобы удалить её вместе со всеми цитатами."
         buttons = []
-        for row in books:
+        for i, row in enumerate(books):
             book_name = row['book']
             cnt = row['cnt']
-            # Обрезаем длинные названия для кнопки
             label = book_name if len(book_name) <= 30 else book_name[:28] + "…"
             buttons.append([InlineKeyboardButton(
                 text=f"🗑 {label} ({cnt} цит.)",
-                callback_data=f"delbook:{book_name[:50]}"
+                callback_data=f"delbook:{i}"
             )])
         buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")])
-        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        # Сохраняем список книг во временное хранилище
+        book_names = [row['book'] for row in books]
+        await cb.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+        # Запишем книги в настройки временно по индексам
+        for i, name in enumerate(book_names):
+            await db.set_setting(f"_book_idx_{i}", name)
     await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("delbook:"))
 async def cb_delete_book_confirm(cb: CallbackQuery):
-    book = cb.data[8:]
+    idx = cb.data[8:]
+    book = await db.get_setting(f"_book_idx_{idx}", "")
+    if not book:
+        await cb.answer("Книга не найдена", show_alert=True)
+        return
     await cb.message.edit_text(
         f"Удалить книгу «{book}» и все её цитаты?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirmdel:{book}")],
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirmdel:{idx}")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="my_books")],
         ])
     )
@@ -263,7 +274,11 @@ async def cb_delete_book_confirm(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("confirmdel:"))
 async def cb_delete_book(cb: CallbackQuery):
-    book = cb.data[11:]
+    idx = cb.data[11:]
+    book = await db.get_setting(f"_book_idx_{idx}", "")
+    if not book:
+        await cb.answer("Книга не найдена", show_alert=True)
+        return
     await db.delete_book(book)
     stats = await db.get_stats()
     await cb.message.edit_text(

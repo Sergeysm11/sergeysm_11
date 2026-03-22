@@ -1,116 +1,86 @@
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import asyncpg
 
 
 class Database:
     def __init__(self):
         self.url = os.getenv("DATABASE_URL")
+        self.pool = None
 
-    def _conn(self):
-        return psycopg2.connect(self.url)
-
-    def init(self):
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS quotes (
-                        id SERIAL PRIMARY KEY,
-                        book TEXT NOT NULL,
-                        quote TEXT NOT NULL,
-                        shown_count INTEGER DEFAULT 0,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS settings (
-                        key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL
-                    )
-                """)
-            conn.commit()
-
-    def add_quote(self, book: str, quote: str) -> int:
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO quotes (book, quote) VALUES (%s, %s) RETURNING id",
-                    (book, quote)
+    async def init(self):
+        self.pool = await asyncpg.create_pool(self.url)
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS quotes (
+                    id SERIAL PRIMARY KEY,
+                    book TEXT NOT NULL,
+                    quote TEXT NOT NULL,
+                    shown_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-                row = cur.fetchone()
-            conn.commit()
-            return row[0]
-
-    def delete_quote(self, quote_id: int) -> bool:
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM quotes WHERE id = %s", (quote_id,))
-                deleted = cur.rowcount > 0
-            conn.commit()
-            return deleted
-
-    def get_books(self):
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT book, COUNT(*) as cnt FROM quotes GROUP BY book ORDER BY cnt DESC"
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 )
-                return cur.fetchall()
+            """)
 
-    def get_quotes_by_book(self, book: str):
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, quote FROM quotes WHERE book ILIKE %s ORDER BY id",
-                    (f"%{book}%",)
-                )
-                return cur.fetchall()
+    async def add_quote(self, book: str, quote: str) -> int:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO quotes (book, quote) VALUES ($1, $2) RETURNING id",
+                book, quote
+            )
+            return row["id"]
 
-    def get_random_quotes(self, count: int):
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, book, quote FROM quotes
-                    ORDER BY shown_count ASC, RANDOM()
-                    LIMIT %s
-                    """,
-                    (count,)
-                )
-                return cur.fetchall()
+    async def delete_quote(self, quote_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM quotes WHERE id = $1", quote_id)
+            return result == "DELETE 1"
 
-    def mark_shown(self, quote_id: int):
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE quotes SET shown_count = shown_count + 1 WHERE id = %s",
-                    (quote_id,)
-                )
-            conn.commit()
+    async def get_books(self):
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT book, COUNT(*) as cnt FROM quotes GROUP BY book ORDER BY cnt DESC"
+            )
 
-    def get_stats(self):
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM quotes")
-                total = cur.fetchone()[0]
-                cur.execute("SELECT COUNT(DISTINCT book) FROM quotes")
-                books = cur.fetchone()[0]
-                cur.execute("SELECT COALESCE(SUM(shown_count), 0) FROM quotes")
-                shown = cur.fetchone()[0]
-                return {"total": total, "books": books, "shown": shown}
+    async def get_quotes_by_book(self, book: str):
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT id, quote FROM quotes WHERE book ILIKE $1 ORDER BY id",
+                f"%{book}%"
+            )
 
-    def set_setting(self, key: str, value: str):
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = %s",
-                    (key, value, value)
-                )
-            conn.commit()
+    async def get_random_quotes(self, count: int):
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT id, book, quote FROM quotes ORDER BY shown_count ASC, RANDOM() LIMIT $1",
+                count
+            )
 
-    def get_setting(self, key: str, default: str = "") -> str:
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT value FROM settings WHERE key = %s", (key,))
-                row = cur.fetchone()
-                return row[0] if row else default
+    async def mark_shown(self, quote_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE quotes SET shown_count = shown_count + 1 WHERE id = $1",
+                quote_id
+            )
+
+    async def get_stats(self):
+        async with self.pool.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM quotes")
+            books = await conn.fetchval("SELECT COUNT(DISTINCT book) FROM quotes")
+            shown = await conn.fetchval("SELECT COALESCE(SUM(shown_count), 0) FROM quotes")
+            return {"total": total, "books": books, "shown": shown}
+
+    async def set_setting(self, key: str, value: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
+                key, value
+            )
+
+    async def get_setting(self, key: str, default: str = "") -> str:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT value FROM settings WHERE key = $1", key)
+            return row["value"] if row else default

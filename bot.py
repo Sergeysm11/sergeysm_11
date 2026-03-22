@@ -8,9 +8,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-import random
 
 from config import BOT_TOKEN, OWNER_ID
 from database import Database
@@ -47,13 +47,12 @@ def main_menu():
         [InlineKeyboardButton(text="✨ Цитата дня", callback_data="send_now")],
     ])
 
-def settings_menu():
-    count = db.get_setting("send_count", "5")
-    mode = db.get_setting("send_mode", "schedule")
-    hour = db.get_setting("send_hour", "9")
-    minute = db.get_setting("send_minute", "0")
-
-    mode_label = f"📅 Режим: {'равномерно весь день' if mode == 'spread' else f'в {int(hour):02d}:{int(minute):02d} МСК'}"
+async def settings_menu():
+    count = await db.get_setting("send_count", "5")
+    mode = await db.get_setting("send_mode", "schedule")
+    hour = await db.get_setting("send_hour", "9")
+    minute = await db.get_setting("send_minute", "0")
+    mode_label = f"📅 {'равномерно весь день' if mode == 'spread' else f'в {int(hour):02d}:{int(minute):02d} МСК'}"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🔢 Цитат в день: {count}", callback_data="set_count")],
         [InlineKeyboardButton(text=mode_label, callback_data="set_mode")],
@@ -91,7 +90,7 @@ def back_to_menu():
 # ─── ГЛАВНОЕ МЕНЮ ───────────────────────────────────────────────────────────
 
 async def show_main_menu(target, edit=False):
-    stats = db.get_stats()
+    stats = await db.get_stats()
     text = (
         "📚 Бот для интервального повторения цитат\n\n"
         f"Книг: {stats['books']}  |  Цитат: {stats['total']}"
@@ -127,11 +126,11 @@ async def cmd_add_shortcut(message: Message, state: FSMContext):
 async def cmd_stats_shortcut(message: Message):
     if message.from_user.id != OWNER_ID:
         return
-    stats = db.get_stats()
-    count = db.get_setting("send_count", "5")
-    mode = db.get_setting("send_mode", "schedule")
-    hour = db.get_setting("send_hour", "9")
-    minute = db.get_setting("send_minute", "0")
+    stats = await db.get_stats()
+    count = await db.get_setting("send_count", "5")
+    mode = await db.get_setting("send_mode", "schedule")
+    hour = await db.get_setting("send_hour", "9")
+    minute = await db.get_setting("send_minute", "0")
     mode_text = "равномерно весь день" if mode == "spread" else f"в {int(hour):02d}:{int(minute):02d} МСК"
     await message.answer(
         f"📊 Статистика\n\n"
@@ -187,7 +186,6 @@ async def got_book_name(message: Message, state: FSMContext):
 async def got_quotes(message: Message, state: FSMContext):
     if message.from_user.id != OWNER_ID:
         return
-
     data = await state.get_data()
     book = data["book"]
     text = message.text.strip()
@@ -198,12 +196,11 @@ async def got_quotes(message: Message, state: FSMContext):
         lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     for quote in lines:
-        db.add_quote(book, quote)
+        await db.add_quote(book, quote)
 
     await state.clear()
-    stats = db.get_stats()
+    stats = await db.get_stats()
 
-    # Если это первая книга — предложить настроить количество
     if stats["total"] == len(lines):
         await message.answer(
             f"Добавлено {len(lines)} цитат из книги «{book}»\n\n"
@@ -225,7 +222,7 @@ async def got_quotes(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "my_books")
 async def cb_my_books(cb: CallbackQuery):
-    books = db.get_books()
+    books = await db.get_books()
     if not books:
         await cb.message.edit_text(
             "База пуста. Добавь первую книгу!",
@@ -236,8 +233,8 @@ async def cb_my_books(cb: CallbackQuery):
         )
     else:
         text = "📚 Книги в базе:\n\n"
-        for book, count in books:
-            text += f"• {book} — {count} цит.\n"
+        for row in books:
+            text += f"• {row['book']} — {row['cnt']} цит.\n"
         await cb.message.edit_text(text, reply_markup=back_to_menu())
     await cb.answer()
 
@@ -246,21 +243,19 @@ async def cb_my_books(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "stats")
 async def cb_stats(cb: CallbackQuery):
-    stats = db.get_stats()
-    count = db.get_setting("send_count", "5")
-    mode = db.get_setting("send_mode", "schedule")
-    hour = db.get_setting("send_hour", "9")
-    minute = db.get_setting("send_minute", "0")
-
+    stats = await db.get_stats()
+    count = await db.get_setting("send_count", "5")
+    mode = await db.get_setting("send_mode", "schedule")
+    hour = await db.get_setting("send_hour", "9")
+    minute = await db.get_setting("send_minute", "0")
     mode_text = "равномерно весь день" if mode == "spread" else f"в {int(hour):02d}:{int(minute):02d} МСК"
-
     await cb.message.edit_text(
         f"📊 Статистика\n\n"
         f"📚 Книг: {stats['books']}\n"
         f"💬 Цитат: {stats['total']}\n"
         f"👁 Показов всего: {stats['shown']}\n\n"
         f"⚙️ Цитат в день: {count}\n"
-        f"🕐 Режим отправки: {mode_text}",
+        f"🕐 Режим: {mode_text}",
         reply_markup=back_to_menu()
     )
     await cb.answer()
@@ -270,7 +265,7 @@ async def cb_stats(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "settings")
 async def cb_settings(cb: CallbackQuery):
-    await cb.message.edit_text("⚙️ Настройки", reply_markup=settings_menu())
+    await cb.message.edit_text("⚙️ Настройки", reply_markup=await settings_menu())
     await cb.answer()
 
 
@@ -283,8 +278,8 @@ async def cb_set_count(cb: CallbackQuery):
 @dp.callback_query(F.data.startswith("count_") & ~F.data.endswith("custom"))
 async def cb_count_preset(cb: CallbackQuery):
     count = int(cb.data.split("_")[1])
-    db.set_setting("send_count", str(count))
-    reschedule_all()
+    await db.set_setting("send_count", str(count))
+    await reschedule_all()
     await cb.message.edit_text(
         f"Будет приходить {count} цитат в день.",
         reply_markup=back_to_menu()
@@ -312,13 +307,10 @@ async def got_custom_count(message: Message, state: FSMContext):
         await message.answer("Введи число от 1 до 50:")
         return
     count = int(message.text)
-    db.set_setting("send_count", str(count))
-    reschedule_all()
+    await db.set_setting("send_count", str(count))
+    await reschedule_all()
     await state.clear()
-    await message.answer(
-        f"Будет приходить {count} цитат в день.",
-        reply_markup=back_to_menu()
-    )
+    await message.answer(f"Будет приходить {count} цитат в день.", reply_markup=back_to_menu())
 
 
 @dp.callback_query(F.data == "set_mode")
@@ -326,7 +318,7 @@ async def cb_set_mode(cb: CallbackQuery):
     await cb.message.edit_text(
         "Как присылать цитаты?\n\n"
         "🕐 В одно время — все цитаты сразу в заданный час\n"
-        "🌅 Равномерно весь день — по одной цитате в течение дня",
+        "🌅 Равномерно весь день — по одной цитате с 8:00 до 22:00",
         reply_markup=mode_menu()
     )
     await cb.answer()
@@ -334,7 +326,7 @@ async def cb_set_mode(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "mode_schedule")
 async def cb_mode_schedule(cb: CallbackQuery, state: FSMContext):
-    db.set_setting("send_mode", "schedule")
+    await db.set_setting("send_mode", "schedule")
     await state.set_state(Settings.waiting_for_schedule)
     await cb.message.edit_text(
         "В какое время присылать?\nВведи время в формате ЧЧ:ММ (МСК)\n\nНапример: 09:00",
@@ -356,9 +348,9 @@ async def got_schedule_time(message: Message, state: FSMContext):
     except Exception:
         await message.answer("Неверный формат. Введи время как ЧЧ:ММ, например 09:00")
         return
-    db.set_setting("send_hour", str(hour))
-    db.set_setting("send_minute", str(minute))
-    reschedule_all()
+    await db.set_setting("send_hour", str(hour))
+    await db.set_setting("send_minute", str(minute))
+    await reschedule_all()
     await state.clear()
     await message.answer(
         f"Все цитаты будут приходить в {hour:02d}:{minute:02d} МСК.",
@@ -368,16 +360,16 @@ async def got_schedule_time(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "mode_spread")
 async def cb_mode_spread(cb: CallbackQuery):
-    db.set_setting("send_mode", "spread")
-    reschedule_all()
+    await db.set_setting("send_mode", "spread")
+    await reschedule_all()
     await cb.message.edit_text(
-        "Цитаты будут приходить равномерно в течение дня с 8:00 до 22:00.",
+        "Цитаты будут приходить равномерно с 8:00 до 22:00.",
         reply_markup=back_to_menu()
     )
     await cb.answer()
 
 
-# ─── ОТПРАВИТЬ СЕЙЧАС ───────────────────────────────────────────────────────
+# ─── ЦИТАТА ДНЯ ─────────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "send_now")
 async def cb_send_now(cb: CallbackQuery):
@@ -385,81 +377,65 @@ async def cb_send_now(cb: CallbackQuery):
     await send_single()
 
 
-# ─── ОТПРАВКА ЦИТАТ ─────────────────────────────────────────────────────────
+# ─── ФОРМАТИРОВАНИЕ И ОТПРАВКА ──────────────────────────────────────────────
 
 def format_quote(book: str, quote: str) -> str:
-    """Убрать кавычки из цитаты и отформатировать"""
-    clean = quote.strip().strip('«»""\'\'\'')
+    clean = quote.strip().strip('«»""\'\'')
     return f"«{clean}»\n\n— <b>{book}</b>"
 
 
 async def send_batch():
-    """Отправить все цитаты разом (для режима schedule и ручной отправки)"""
-    count = int(db.get_setting("send_count", "5"))
-    quotes = db.get_random_quotes(count)
+    count = int(await db.get_setting("send_count", "5"))
+    quotes = await db.get_random_quotes(count)
     if not quotes:
-        await bot.send_message(OWNER_ID, "База пуста. Добавь цитаты через меню.", reply_markup=main_menu())
+        await bot.send_message(OWNER_ID, "База пуста.", reply_markup=main_menu())
         return
-    for i, (q_id, book, quote) in enumerate(quotes, 1):
-        await bot.send_message(OWNER_ID, format_quote(book, quote), parse_mode="HTML")
-        db.mark_shown(q_id)
+    for i, row in enumerate(quotes, 1):
+        await bot.send_message(OWNER_ID, format_quote(row["book"], row["quote"]), parse_mode="HTML")
+        await db.mark_shown(row["id"])
         if i < len(quotes):
             await asyncio.sleep(0.3)
 
 
 async def send_single():
-    """Отправить одну случайную цитату (для режима spread)"""
-    quotes = db.get_random_quotes(1)
+    quotes = await db.get_random_quotes(1)
     if not quotes:
+        await bot.send_message(OWNER_ID, "База пуста. Добавь цитаты через /add")
         return
-    q_id, book, quote = quotes[0]
-    await bot.send_message(OWNER_ID, format_quote(book, quote), parse_mode="HTML")
-    db.mark_shown(q_id)
+    row = quotes[0]
+    await bot.send_message(OWNER_ID, format_quote(row["book"], row["quote"]), parse_mode="HTML")
+    await db.mark_shown(row["id"])
 
 
 # ─── ПЛАНИРОВЩИК ────────────────────────────────────────────────────────────
 
-def reschedule_all():
-    """Пересоздать все задачи планировщика исходя из текущих настроек"""
-    # Удаляем старые задачи
-    for job_id in ["daily_batch", "spread_0", "spread_1", "spread_2",
-                   "spread_3", "spread_4", "spread_5", "spread_6",
-                   "spread_7", "spread_8", "spread_9", "spread_10",
-                   "spread_11", "spread_12", "spread_13", "spread_14"]:
+async def reschedule_all():
+    for job_id in ["daily_batch"] + [f"spread_{i}" for i in range(15)]:
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
 
-    mode = db.get_setting("send_mode", "schedule")
-    count = int(db.get_setting("send_count", "5"))
+    mode = await db.get_setting("send_mode", "schedule")
+    count = int(await db.get_setting("send_count", "5"))
 
     if mode == "schedule":
-        hour = int(db.get_setting("send_hour", "9"))
-        minute = int(db.get_setting("send_minute", "0"))
+        hour = int(await db.get_setting("send_hour", "9"))
+        minute = int(await db.get_setting("send_minute", "0"))
         scheduler.add_job(send_batch, CronTrigger(hour=hour, minute=minute), id="daily_batch")
-
     elif mode == "spread":
-        # Равномерно с 8:00 до 22:00 — 14 часов = 840 минут
         if count > 0:
             interval = 840 // count
             for i in range(count):
                 total_minutes = 8 * 60 + i * interval
                 h = total_minutes // 60
                 m = total_minutes % 60
-                scheduler.add_job(
-                    send_single,
-                    CronTrigger(hour=h, minute=m),
-                    id=f"spread_{i}"
-                )
+                scheduler.add_job(send_single, CronTrigger(hour=h, minute=m), id=f"spread_{i}")
 
 
 async def main():
-    db.init()
-    reschedule_all()
+    await db.init()
+    await reschedule_all()
     scheduler.start()
-
-    mode = db.get_setting("send_mode", "schedule")
-    count = db.get_setting("send_count", "5")
-    logger.info(f"Бот запущен. Режим: {mode}, цитат: {count}")
+    logger.info("Бот запущен.")
     await dp.start_polling(bot)
 
 

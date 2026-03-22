@@ -232,10 +232,48 @@ async def cb_my_books(cb: CallbackQuery):
             ])
         )
     else:
-        text = "📚 Книги в базе:\n\n"
+        text = "📚 Книги в базе:\n\nНажми на книгу чтобы удалить её вместе со всеми цитатами."
+        buttons = []
         for row in books:
-            text += f"• {row['book']} — {row['cnt']} цит.\n"
-        await cb.message.edit_text(text, reply_markup=back_to_menu())
+            book_name = row['book']
+            cnt = row['cnt']
+            # Обрезаем длинные названия для кнопки
+            label = book_name if len(book_name) <= 30 else book_name[:28] + "…"
+            buttons.append([InlineKeyboardButton(
+                text=f"🗑 {label} ({cnt} цит.)",
+                callback_data=f"delbook:{book_name[:50]}"
+            )])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")])
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("delbook:"))
+async def cb_delete_book_confirm(cb: CallbackQuery):
+    book = cb.data[8:]
+    await cb.message.edit_text(
+        f"Удалить книгу «{book}» и все её цитаты?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirmdel:{book}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="my_books")],
+        ])
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("confirmdel:"))
+async def cb_delete_book(cb: CallbackQuery):
+    book = cb.data[11:]
+    await db.delete_book(book)
+    stats = await db.get_stats()
+    await cb.message.edit_text(
+        f"Книга «{book}» удалена.\n\n"
+        f"Осталось: {stats['books']} книг, {stats['total']} цитат",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📖 Мои книги", callback_data="my_books")],
+            [InlineKeyboardButton(text="◀️ В меню", callback_data="main_menu")],
+        ])
+    )
     await cb.answer()
 
 

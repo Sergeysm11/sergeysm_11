@@ -279,7 +279,7 @@ async def send_daily_quotes(manual=False):
         await bot.send_message(OWNER_ID, f"Цитаты на {now} — {len(quotes)} шт.")
 
     for i, (q_id, book, quote) in enumerate(quotes, 1):
-        await bot.send_message(OWNER_ID, f"📖 {book}\n\n{quote}")
+        await bot.send_message(OWNER_ID, f"«{quote}»\n\n— {book}")
         db.mark_shown(q_id)
         if i < len(quotes):
             await asyncio.sleep(0.3)

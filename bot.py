@@ -44,7 +44,7 @@ def main_menu():
         [InlineKeyboardButton(text="📖 Мои книги", callback_data="my_books")],
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="💬 Получить цитаты сейчас", callback_data="send_now")],
+        [InlineKeyboardButton(text="✨ Цитата дня", callback_data="send_now")],
     ])
 
 def settings_menu():
@@ -348,10 +348,16 @@ async def cb_mode_spread(cb: CallbackQuery):
 @dp.callback_query(F.data == "send_now")
 async def cb_send_now(cb: CallbackQuery):
     await cb.answer("Отправляю...")
-    await send_batch()
+    await send_single()
 
 
 # ─── ОТПРАВКА ЦИТАТ ─────────────────────────────────────────────────────────
+
+def format_quote(book: str, quote: str) -> str:
+    """Убрать кавычки из цитаты и отформатировать"""
+    clean = quote.strip().strip('«»""\'\'\'')
+    return f"«{clean}»\n\n— <b>{book}</b>"
+
 
 async def send_batch():
     """Отправить все цитаты разом (для режима schedule и ручной отправки)"""
@@ -361,7 +367,7 @@ async def send_batch():
         await bot.send_message(OWNER_ID, "База пуста. Добавь цитаты через меню.", reply_markup=main_menu())
         return
     for i, (q_id, book, quote) in enumerate(quotes, 1):
-        await bot.send_message(OWNER_ID, f"«{quote}»\n\n— {book}")
+        await bot.send_message(OWNER_ID, format_quote(book, quote), parse_mode="HTML")
         db.mark_shown(q_id)
         if i < len(quotes):
             await asyncio.sleep(0.3)
@@ -373,7 +379,7 @@ async def send_single():
     if not quotes:
         return
     q_id, book, quote = quotes[0]
-    await bot.send_message(OWNER_ID, f"«{quote}»\n\n— {book}")
+    await bot.send_message(OWNER_ID, format_quote(book, quote), parse_mode="HTML")
     db.mark_shown(q_id)
 
 

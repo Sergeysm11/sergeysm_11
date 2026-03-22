@@ -34,6 +34,10 @@ class Database:
             )
             return row["id"]
 
+    async def delete_book(self, book: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM quotes WHERE book = $1", book)
+
     async def delete_quote(self, quote_id: int) -> bool:
         async with self.pool.acquire() as conn:
             result = await conn.execute("DELETE FROM quotes WHERE id = $1", quote_id)

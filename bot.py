@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -108,6 +108,40 @@ async def cmd_start(message: Message, state: FSMContext):
         return
     await state.clear()
     await show_main_menu(message)
+
+
+@dp.message(Command("add"))
+async def cmd_add_shortcut(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+    await state.set_state(AddQuotes.waiting_for_book)
+    await message.answer(
+        "📖 Введи название книги:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="main_menu")]
+        ])
+    )
+
+
+@dp.message(Command("stats"))
+async def cmd_stats_shortcut(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    stats = db.get_stats()
+    count = db.get_setting("send_count", "5")
+    mode = db.get_setting("send_mode", "schedule")
+    hour = db.get_setting("send_hour", "9")
+    minute = db.get_setting("send_minute", "0")
+    mode_text = "равномерно весь день" if mode == "spread" else f"в {int(hour):02d}:{int(minute):02d} МСК"
+    await message.answer(
+        f"📊 Статистика\n\n"
+        f"📚 Книг: {stats['books']}\n"
+        f"💬 Цитат: {stats['total']}\n"
+        f"👁 Показов всего: {stats['shown']}\n\n"
+        f"⚙️ Цитат в день: {count}\n"
+        f"🕐 Режим: {mode_text}",
+        reply_markup=back_to_menu()
+    )
 
 
 @dp.callback_query(F.data == "main_menu")

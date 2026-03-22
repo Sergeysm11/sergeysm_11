@@ -1,10 +1,12 @@
 import asyncio
 import logging
-import random
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -16,9 +18,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 db = Database()
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+
+
+# ─── СОСТОЯНИЯ ──────────────────────────────────────────────────────────────
+
+class AddQuotes(StatesGroup):
+    waiting_for_book = State()
+    waiting_for_quotes = State()
 
 
 # ─── КОМАНДЫ ────────────────────────────────────────────────────────────────
@@ -27,109 +37,88 @@ scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 async def cmd_start(message: Message):
     if message.from_user.id != OWNER_ID:
         return
+    stats = db.get_stats()
     await message.answer(
-        "📚 Бот для интервального повторения цитат из книг\n\n"
+        "📚 Бот для интервального повторения цитат\n\n"
+        f"В базе: {stats['books']} книг, {stats['total']} цитат\n\n"
         "Команды:\n"
-        "/add Книга | Цитата — добавить цитату\n"
-        "/list — список книг\n"
+        "/add — добавить цитаты из книги\n"
+        "/list — список всех книг\n"
         "/quotes Название — цитаты из книги\n"
         "/delete 42 — удалить цитату по ID\n"
-        "/send — получить случайные цитаты прямо сейчас\n"
-        "/schedule 09:00 5 — настроить расписание\n"
+        "/send — получить цитаты прямо сейчас\n"
+        "/schedule 09:00 5 — настроить время и количество\n"
         "/status — текущие настройки\n"
-        "/stats — статистика базы"
+        "/stats — статистика"
     )
 
 
 @dp.message(Command("add"))
-async def cmd_add(message: Message):
+async def cmd_add(message: Message, state: FSMContext):
     if message.from_user.id != OWNER_ID:
         return
+    await state.set_state(AddQuotes.waiting_for_book)
+    await message.answer("📖 Введи название книги:")
 
-    args = message.text[4:].strip()
-    if "|" not in args:
-        await message.answer(
-            "❌ Формат: /add Название книги | Текст цитаты\n\n"
-            "Пример:\n/add Атомные привычки | Каждый день 1% лучше — это 37 раз лучше за год.",
-            parse_mode=None
-        )
+
+@dp.message(AddQuotes.waiting_for_book)
+async def got_book_name(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
         return
-
-    parts = args.split("|", 1)
-    book = parts[0].strip()
-    quote = parts[1].strip()
-
-    if not book or not quote:
-        await message.answer("❌ Книга и цитата не могут быть пустыми.")
-        return
-
-    quote_id = db.add_quote(book, quote)
-    total = db.get_stats()["total"]
+    book = message.text.strip()
+    await state.update_data(book=book)
+    await state.set_state(AddQuotes.waiting_for_quotes)
     await message.answer(
-        f"✅ Цитата добавлена (ID: {quote_id})\n"
-        f"📖 <b>{book}</b>\n\n"
-        f"<i>{quote}</i>\n\n"
-        f"Всего цитат в базе: {total}",
-        parse_mode="HTML"
+        f"Книга: «{book}»\n\n"
+        "Теперь отправь цитаты — каждая с новой строки:\n\n"
+        "Первая цитата\n"
+        "Вторая цитата\n"
+        "Третья цитата"
     )
 
 
-@dp.message(Command("bulk"))
-async def cmd_bulk(message: Message):
+@dp.message(AddQuotes.waiting_for_quotes)
+async def got_quotes(message: Message, state: FSMContext):
     if message.from_user.id != OWNER_ID:
         return
 
-    # Убираем команду /bulk из текста
-    text = message.text[5:].strip()
+    data = await state.get_data()
+    book = data["book"]
 
-    if not text:
-        await message.answer(
-            "❌ Формат:\n\n"
-            "/bulk\n"
-            "Название книги\n"
-            "Первая цитата\n"
-            "Вторая цитата\n"
-            "Третья цитата\n\n"
-            "Другая книга\n"
-            "Цитата из другой книги\n\n"
-            "Пустая строка между книгами обязательна."
-        )
+    # Поддерживаем оба формата:
+    # 1. Каждая строка = цитата
+    # 2. Цитаты разделены пустой строкой (многострочные цитаты)
+    text = message.text.strip()
+    if "\n\n" in text:
+        # Пустая строка = разделитель между цитатами
+        lines = [b.strip() for b in text.split("\n\n") if b.strip()]
+    else:
+        # Каждая строка = отдельная цитата
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+    if not lines:
+        await message.answer("Не получил ни одной цитаты. Попробуй ещё раз.")
         return
 
-    # Разбиваем на блоки по пустой строке
-    blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+    for quote in lines:
+        db.add_quote(book, quote)
 
-    total_added = 0
-    report = []
-
-    for block in blocks:
-        lines = [l.strip() for l in block.split("\n") if l.strip()]
-        if len(lines) < 2:
-            continue
-
-        book = lines[0]
-        quotes = lines[1:]
-        added = 0
-
-        for quote in quotes:
-            if quote:
-                db.add_quote(book, quote)
-                added += 1
-                total_added += 1
-
-        report.append(f"📖 {book} — {added} цит.")
-
-    if total_added == 0:
-        await message.answer("❌ Не удалось распознать цитаты. Проверь формат.")
-        return
-
+    await state.clear()
     stats = db.get_stats()
-    report_text = "\n".join(report)
     await message.answer(
-        f"✅ Добавлено {total_added} цитат\n\n"
-        f"{report_text}\n\n"
-        f"Всего в базе: {stats['total']}"
+        f"Добавлено {len(lines)} цитат из книги «{book}»\n\n"
+        f"Всего в базе: {stats['total']} цитат из {stats['books']} книг\n\n"
+        "Добавить ещё книгу — /add\n"
+        "Получить цитаты сейчас — /send"
     )
+
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+    await state.clear()
+    await message.answer("Отменено.")
 
 
 @dp.message(Command("list"))
@@ -139,14 +128,14 @@ async def cmd_list(message: Message):
 
     books = db.get_books()
     if not books:
-        await message.answer("📭 База пуста. Добавь цитаты командой /add")
+        await message.answer("База пуста. Добавь цитаты командой /add")
         return
 
-    text = "📚 <b>Книги в базе:</b>\n\n"
+    text = "Книги в базе:\n\n"
     for book, count in books:
         text += f"• {book} — {count} цит.\n"
 
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text)
 
 
 @dp.message(Command("quotes"))
@@ -156,24 +145,23 @@ async def cmd_quotes(message: Message):
 
     book = message.text[7:].strip()
     if not book:
-        await message.answer("❌ Укажи название книги: /quotes Атомные привычки")
+        await message.answer("Укажи название книги: /quotes Атомные привычки")
         return
 
     quotes = db.get_quotes_by_book(book)
     if not quotes:
-        await message.answer(f"❌ Книга «{book}» не найдена.")
+        await message.answer(f"Книга не найдена.")
         return
 
-    text = f"📖 <b>{book}</b> ({len(quotes)} цит.)\n\n"
+    text = f"{book} ({len(quotes)} цит.)\n\n"
     for q_id, q_text in quotes:
         short = q_text[:120] + "..." if len(q_text) > 120 else q_text
-        text += f"<code>ID {q_id}</code>: {short}\n\n"
+        text += f"ID {q_id}: {short}\n\n"
 
-    # Telegram лимит 4096 символов
     if len(text) > 4000:
         text = text[:4000] + "\n\n... (показаны первые записи)"
 
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text)
 
 
 @dp.message(Command("delete"))
@@ -183,15 +171,15 @@ async def cmd_delete(message: Message):
 
     args = message.text[7:].strip()
     if not args.isdigit():
-        await message.answer("❌ Укажи числовой ID: /delete 42")
+        await message.answer("Укажи числовой ID: /delete 42")
         return
 
     quote_id = int(args)
     success = db.delete_quote(quote_id)
     if success:
-        await message.answer(f"🗑 Цитата ID {quote_id} удалена.")
+        await message.answer(f"Цитата ID {quote_id} удалена.")
     else:
-        await message.answer(f"❌ Цитата с ID {quote_id} не найдена.")
+        await message.answer(f"Цитата с ID {quote_id} не найдена.")
 
 
 @dp.message(Command("send"))
@@ -199,7 +187,6 @@ async def cmd_send(message: Message):
     if message.from_user.id != OWNER_ID:
         return
     await send_daily_quotes(manual=True)
-    await message.answer("✅ Цитаты отправлены!")
 
 
 @dp.message(Command("schedule"))
@@ -210,9 +197,8 @@ async def cmd_schedule(message: Message):
     args = message.text[9:].strip().split()
     if len(args) != 2 or not args[1].isdigit():
         await message.answer(
-            "❌ Формат: /schedule ЧЧ:ММ количество\n\n"
-            "Пример: /schedule 09:00 5\n"
-            "Пример: /schedule 18:30 10"
+            "Формат: /schedule ЧЧ:ММ количество\n\n"
+            "Пример: /schedule 09:00 5"
         )
         return
 
@@ -225,24 +211,23 @@ async def cmd_schedule(message: Message):
         minute = int(time_parts[1])
         assert 0 <= hour <= 23 and 0 <= minute <= 59
     except Exception:
-        await message.answer("❌ Неверный формат времени. Используй ЧЧ:ММ, например 09:00")
+        await message.answer("Неверный формат времени. Используй ЧЧ:ММ, например 09:00")
         return
 
     if count < 1 or count > 50:
-        await message.answer("❌ Количество цитат должно быть от 1 до 50.")
+        await message.answer("Количество цитат должно быть от 1 до 50.")
         return
 
     db.set_setting("send_hour", str(hour))
     db.set_setting("send_minute", str(minute))
     db.set_setting("send_count", str(count))
 
-    # Пересоздаём задачу планировщика
     reschedule_job(hour, minute)
 
     await message.answer(
-        f"✅ Расписание обновлено\n\n"
-        f"🕐 Время: {time_str} (МСК)\n"
-        f"📝 Цитат за раз: {count}"
+        f"Расписание обновлено\n\n"
+        f"Время: {time_str} МСК\n"
+        f"Цитат за раз: {count}"
     )
 
 
@@ -257,12 +242,11 @@ async def cmd_status(message: Message):
     stats = db.get_stats()
 
     await message.answer(
-        f"⚙️ <b>Текущие настройки</b>\n\n"
-        f"🕐 Время рассылки: {int(hour):02d}:{int(minute):02d} МСК\n"
-        f"📝 Цитат за раз: {count}\n"
-        f"📚 Книг в базе: {stats['books']}\n"
-        f"💬 Цитат в базе: {stats['total']}",
-        parse_mode="HTML"
+        f"Текущие настройки\n\n"
+        f"Время рассылки: {int(hour):02d}:{int(minute):02d} МСК\n"
+        f"Цитат за раз: {count}\n"
+        f"Книг в базе: {stats['books']}\n"
+        f"Цитат в базе: {stats['total']}"
     )
 
 
@@ -273,11 +257,10 @@ async def cmd_stats(message: Message):
 
     stats = db.get_stats()
     await message.answer(
-        f"📊 <b>Статистика</b>\n\n"
-        f"📚 Книг: {stats['books']}\n"
-        f"💬 Цитат: {stats['total']}\n"
-        f"📅 Показов всего: {stats['shown']}",
-        parse_mode="HTML"
+        f"Статистика\n\n"
+        f"Книг: {stats['books']}\n"
+        f"Цитат: {stats['total']}\n"
+        f"Показов всего: {stats['shown']}"
     )
 
 
@@ -288,21 +271,15 @@ async def send_daily_quotes(manual=False):
     quotes = db.get_random_quotes(count)
 
     if not quotes:
-        if manual:
-            await bot.send_message(OWNER_ID, "📭 База цитат пуста.")
+        await bot.send_message(OWNER_ID, "База цитат пуста. Добавь цитаты через /add")
         return
 
     if not manual:
         now = datetime.now().strftime("%d.%m.%Y")
-        header = await bot.send_message(
-            OWNER_ID,
-            f"☀️ <b>Цитаты на {now}</b> — {len(quotes)} шт.",
-            parse_mode="HTML"
-        )
+        await bot.send_message(OWNER_ID, f"Цитаты на {now} — {len(quotes)} шт.")
 
     for i, (q_id, book, quote) in enumerate(quotes, 1):
-        text = f"📖 <b>{book}</b>\n\n<i>{quote}</i>"
-        await bot.send_message(OWNER_ID, text, parse_mode="HTML")
+        await bot.send_message(OWNER_ID, f"📖 {book}\n\n{quote}")
         db.mark_shown(q_id)
         if i < len(quotes):
             await asyncio.sleep(0.3)

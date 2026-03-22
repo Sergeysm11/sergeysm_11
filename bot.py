@@ -28,7 +28,7 @@ async def cmd_start(message: Message):
     if message.from_user.id != OWNER_ID:
         return
     await message.answer(
-        "📚 Бот для интервального повторения цитат\n\n"
+        "📚 Бот для интервального повторения цитат из книг\n\n"
         "Команды:\n"
         "/add Книга | Цитата — добавить цитату\n"
         "/list — список книг\n"
@@ -71,6 +71,64 @@ async def cmd_add(message: Message):
         f"<i>{quote}</i>\n\n"
         f"Всего цитат в базе: {total}",
         parse_mode="HTML"
+    )
+
+
+@dp.message(Command("bulk"))
+async def cmd_bulk(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    # Убираем команду /bulk из текста
+    text = message.text[5:].strip()
+
+    if not text:
+        await message.answer(
+            "❌ Формат:\n\n"
+            "/bulk\n"
+            "Название книги\n"
+            "Первая цитата\n"
+            "Вторая цитата\n"
+            "Третья цитата\n\n"
+            "Другая книга\n"
+            "Цитата из другой книги\n\n"
+            "Пустая строка между книгами обязательна."
+        )
+        return
+
+    # Разбиваем на блоки по пустой строке
+    blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+
+    total_added = 0
+    report = []
+
+    for block in blocks:
+        lines = [l.strip() for l in block.split("\n") if l.strip()]
+        if len(lines) < 2:
+            continue
+
+        book = lines[0]
+        quotes = lines[1:]
+        added = 0
+
+        for quote in quotes:
+            if quote:
+                db.add_quote(book, quote)
+                added += 1
+                total_added += 1
+
+        report.append(f"📖 {book} — {added} цит.")
+
+    if total_added == 0:
+        await message.answer("❌ Не удалось распознать цитаты. Проверь формат.")
+        return
+
+    stats = db.get_stats()
+    report_text = "\n".join(report)
+    await message.answer(
+        f"✅ Добавлено {total_added} цитат\n\n"
+        f"{report_text}\n\n"
+        f"Всего в базе: {stats['total']}"
     )
 
 
